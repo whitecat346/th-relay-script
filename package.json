@@ -1,0 +1,11 @@
+{
+  "name": "th-relay-note",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "B站接力收集（TH-Relay-Note）油猴脚本",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/"
+  }
+}

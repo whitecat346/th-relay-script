@@ -254,3 +254,9 @@ $RECYCLE.BIN/
 # DeepSeek Harness
 .dsh-ops/
 .dsh/
+
+# TH-Relay-Note：模板里的 *.js / dist 规则会把源码与分发脚本一起忽略，这里放行
+!src/**/*.js
+!test/**/*.js
+!dist/
+!dist/**
