@@ -37,16 +37,29 @@ function pickOwner(owner) {
   return { authorName: name, authorLink: space(mid) };
 }
 
+function pickPublishTime(...candidates) {
+  for (const c of candidates) {
+    if (c == null || c === '' || c === 0) continue;
+    const n = typeof c === 'number' ? c : Number(c);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    return n < 1e12 ? n * 1000 : n;
+  }
+  return null;
+}
+
 function fromStateVideo() {
   const state = pageWindow().__INITIAL_STATE__;
   const data = state && state.videoData;
-  return pickOwner(data && data.owner);
+  const owner = pickOwner(data && data.owner);
+  if (!owner && !data) return null;
+  return { ...(owner || {}), publishedAt: pickPublishTime(data && data.pubdate, data && data.ctime) };
 }
 
 function fromStateRead() {
   const state = pageWindow().__INITIAL_STATE__;
   if (!state) return null;
   const info = state.readInfo || {};
+  const publishedAt = pickPublishTime(info.publish_time, info.pubtime, info.pub_time, state.readInfo && state.readInfo.articleInfo && state.readInfo.articleInfo.publish_time);
   const candidates = [
     info.author,
     state.readInfo && state.readInfo.author,
@@ -56,12 +69,12 @@ function fromStateRead() {
   ].filter(Boolean);
   for (const c of candidates) {
     const owner = pickOwner(c);
-    if (owner) return owner;
+    if (owner) return { ...owner, publishedAt };
   }
   if (info.author_name || info.mid) {
-    return { authorName: String(info.author_name || '').trim(), authorLink: space(info.mid) };
+    return { authorName: String(info.author_name || '').trim(), authorLink: space(info.mid), publishedAt };
   }
-  return null;
+  return publishedAt ? { authorName: '', authorLink: '', publishedAt } : null;
 }
 
 function fromStateOpus() {
@@ -71,7 +84,10 @@ function fromStateOpus() {
   const modules = detail.modules || (detail.item && detail.item.modules) || [];
   const author = modules.find((m) => m && (m.module_type === 'MODULE_TYPE_AUTHOR' || m.module_author));
   const ma = author && (author.module_author || author);
-  return pickOwner(ma);
+  const owner = pickOwner(ma);
+  const publishedAt = pickPublishTime(ma && ma.pub_ts, detail.basic && detail.basic.pub_ts, detail.item && detail.item.basic && detail.item.basic.pub_ts);
+  if (!owner) return publishedAt ? { authorName: '', authorLink: '', publishedAt } : null;
+  return { ...owner, publishedAt };
 }
 
 function fromDom() {
@@ -93,6 +109,7 @@ export async function scrapeCurrentPage() {
     workLink: page.type ? page.url : '',
     authorName: '',
     authorLink: '',
+    publishedAt: null,
     source: '',
   };
   if (!page.type) return result;
@@ -100,7 +117,7 @@ export async function scrapeCurrentPage() {
   const fromState = page.type === 'video' ? fromStateVideo : page.type === 'read' ? fromStateRead : fromStateOpus;
   try {
     const owner = fromState();
-    if (owner && (owner.authorName || owner.authorLink)) {
+    if (owner && (owner.authorName || owner.authorLink || owner.publishedAt)) {
       return { ...result, ...owner, source: 'state' };
     }
   } catch {}
@@ -109,19 +126,20 @@ export async function scrapeCurrentPage() {
     let owner = null;
     if (page.type === 'video') {
       const json = await fetchJson(`https://api.bilibili.com/x/web-interface/view?bvid=${page.id}`);
-      owner = pickOwner(json.data && json.data.owner);
+      const d = (json.data || {});
+      owner = { ...(pickOwner(d.owner) || {}), publishedAt: pickPublishTime(d.pubdate) };
     } else if (page.type === 'read') {
       const json = await fetchJson(`https://api.bilibili.com/x/article/viewinfo?id=cv${page.id}`);
       const d = json.data || {};
-      owner = { authorName: String(d.author_name || d.name || '').trim(), authorLink: space(d.mid) };
+      owner = { authorName: String(d.author_name || d.name || '').trim(), authorLink: space(d.mid), publishedAt: pickPublishTime(d.publish_time, d.ctime) };
     } else {
       const json = await fetchJson(`https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=${page.id}`);
       const item = (json.data && json.data.item) || {};
       const author = (item.modules || []).find((m) => m && m.module_type === 'MODULE_TYPE_AUTHOR');
       const ma = author && (author.module_author || author);
-      owner = pickOwner(ma);
+      owner = { ...(pickOwner(ma) || {}), publishedAt: pickPublishTime(ma && ma.pub_ts) };
     }
-    if (owner && (owner.authorName || owner.authorLink)) {
+    if (owner && (owner.authorName || owner.authorLink || owner.publishedAt)) {
       return { ...result, ...owner, source: 'api' };
     }
   } catch {}

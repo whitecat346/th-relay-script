@@ -17,7 +17,7 @@ export function field({ label, name, value = '', placeholder = '', hint = '', er
 export function modalShell({ title, badge = '', subtitle = '', width = 560, body = '', footer = '', footNote = '', scroll = false }) {
   return `<div class="trn-backdrop" data-act="close-modal"></div>
   <div class="trn-card" style="width:${width}px">
-    <div class="trn-card-head">
+    <div class="trn-card-head" data-drag="modal">
       <div>
         ${badge ? `<div class="trn-badge">${esc(badge)}</div>` : ''}
         <div class="trn-title">${esc(title)}</div>

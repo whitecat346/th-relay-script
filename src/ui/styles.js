@@ -52,26 +52,34 @@ export const CSS = `
 .trn-root ::-webkit-scrollbar-track { background: transparent; }
 
 .trn-tab {
-  position: fixed; right: 0; top: 42%; z-index: 2147483000;
+  position: fixed; right: 14px; top: 42%; z-index: 2147483000;
   writing-mode: vertical-rl; letter-spacing: 3px;
-  padding: 14px 8px; border-radius: 10px 0 0 10px;
+  padding: 14px 8px; border-radius: 10px;
   background: linear-gradient(160deg, #7f6ff0, #6250d4);
   color: #fff; font-size: 13px; font-weight: 600;
-  box-shadow: -2px 4px 14px rgba(107, 91, 219, 0.35);
+  box-shadow: 0 4px 14px rgba(107, 91, 219, 0.35);
   user-select: none; touch-action: none;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
 }
-.trn-tab:hover { background: linear-gradient(160deg, #8b7af5, #6b58e0); }
+.trn-tab:hover { background: linear-gradient(160deg, #8b7af5, #6b58e0); transform: translateX(-3px); }
 
 .trn-backdrop { position: fixed; inset: 0; z-index: 2147483000; background: rgba(20, 21, 31, 0.28); }
 .trn-backdrop.clear { background: transparent; }
 
 .trn-panel {
-  position: fixed; right: 18px; z-index: 2147483001;
+  position: fixed; right: 56px; z-index: 2147483001;
   width: 338px; max-height: 84vh; overflow: auto;
   background: var(--trn-bg); border-radius: 18px; box-shadow: var(--trn-shadow);
   padding: 20px 20px 4px;
+  transform: translate(var(--trn-panel-x, 0px), var(--trn-panel-y, 0px));
 }
 .trn-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+[data-drag] { cursor: grab; touch-action: none; }
+.trn-dragging [data-drag] { cursor: grabbing; }
+.trn-dragging .trn-root, .trn-dragging { user-select: none; }
+.trn-panel-tools { display: flex; align-items: center; gap: 4px; }
+.trn-icon-btn { width: 26px; height: 26px; border-radius: 50%; color: var(--trn-sub); font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.trn-icon-btn:hover { background: var(--trn-bg-soft); color: var(--trn-text); }
 .trn-title { font-size: 19px; font-weight: 700; letter-spacing: 0.2px; }
 .trn-sub { color: var(--trn-sub); font-size: 12px; margin-top: 4px; }
 .trn-x { width: 26px; height: 26px; border-radius: 50%; color: var(--trn-sub); font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; }
@@ -92,7 +100,8 @@ export const CSS = `
 .trn-panel-foot { margin: 10px -20px 0; padding: 10px 20px; border-top: 1px solid var(--trn-border); color: var(--trn-placeholder); font-size: 11px; }
 
 .trn-card {
-  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  position: fixed; left: 50%; top: 50%;
+  transform: translate(-50%, -50%) translate(var(--trn-modal-x, 0px), var(--trn-modal-y, 0px));
   z-index: 2147483002; display: flex; flex-direction: column;
   background: var(--trn-bg); border-radius: 18px; box-shadow: var(--trn-shadow);
   max-height: 88vh; max-width: 94vw;
@@ -162,7 +171,8 @@ export const CSS = `
 .trn-inline-add { display: flex; gap: 8px; margin-top: 8px; }
 
 .trn-big {
-  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  position: fixed; left: 50%; top: 50%;
+  transform: translate(-50%, -50%) translate(var(--trn-big-x, 0px), var(--trn-big-y, 0px));
   z-index: 2147483002; display: flex; flex-direction: column;
   width: min(1160px, 94vw); height: min(820px, 90vh);
   background: var(--trn-bg); border-radius: 18px; box-shadow: var(--trn-shadow); overflow: hidden;

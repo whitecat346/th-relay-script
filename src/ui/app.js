@@ -8,6 +8,7 @@ import {
   sortBars,
   splitTime,
   suggestBarPrefill,
+  timeFromPublish,
   todayString,
   typeName,
   uid,
@@ -21,8 +22,6 @@ import { downloadText, idbGetHandle, pickDirectory, saveToDirectory, supportsDir
 import { CSS } from './styles.js';
 import { esc, field, modalShell } from './dom.js';
 
-const PAGE_SIZE = 20;
-
 const state = {
   data: null,
   view: 'closed',
@@ -31,6 +30,7 @@ const state = {
   manage: { projectId: null, search: '', filter: 'all', page: 1 },
   toast: null,
   pinned: false,
+  offsets: { big: { x: 0, y: 0 }, modal: { x: 0, y: 0 }, panel: { x: 0, y: 0 } },
   newTypeValue: '',
   focusKey: null,
   dragId: null,
@@ -73,6 +73,7 @@ function closeModal() {
 }
 
 function openModal(modal) {
+  if (state.offsets.modal.x || state.offsets.modal.y) state.offsets.modal = { x: 0, y: 0 };
   state.modal = modal;
   render();
 }
@@ -118,10 +119,23 @@ export function mount(host, options = {}) {
   render();
 }
 
+function themeIsDark() {
+  const theme = state.data.settings.theme || 'auto';
+  if (theme === 'dark') return true;
+  if (theme === 'light') return false;
+  return document.documentElement.classList.contains('bili_dark');
+}
+
 function render() {
   if (!root) return;
   const pos = Number(state.data.settings.panelPosition) || 42;
-  root.className = `trn-root${document.documentElement.classList.contains('bili_dark') ? ' trn-dark' : ''}`;
+  root.className = `trn-root${themeIsDark() ? ' trn-dark' : ''}`;
+  root.style.setProperty('--trn-big-x', `${state.offsets.big.x}px`);
+  root.style.setProperty('--trn-big-y', `${state.offsets.big.y}px`);
+  root.style.setProperty('--trn-modal-x', `${state.offsets.modal.x}px`);
+  root.style.setProperty('--trn-modal-y', `${state.offsets.modal.y}px`);
+  root.style.setProperty('--trn-panel-x', `${state.offsets.panel.x}px`);
+  root.style.setProperty('--trn-panel-y', `${state.offsets.panel.y}px`);
   const parts = [`<button class="trn-tab" style="top:${pos}%">接力收集</button>`];
   if (state.view === 'panel') parts.push(renderPanel(pos));
   if (state.view === 'big') parts.push(renderBig());
@@ -160,12 +174,15 @@ function renderPanel(pos) {
       </div>`
     : '<div class="trn-bind-empty">尚未绑定项目，创建一个或在项目管理中选择。</div>';
   return `<div class="trn-panel" style="${pos > 55 ? 'bottom:70px' : 'top:96px'}">
-    <div class="trn-panel-head">
+    <div class="trn-panel-head" data-drag="panel">
       <div>
         <div class="trn-title">接力收集</div>
         <div class="trn-sub">在 BiliBili，接住每一份创作。</div>
       </div>
-      <button class="trn-x" data-act="close-panel" title="关闭">✕</button>
+      <div class="trn-panel-tools">
+        <button class="trn-icon-btn" data-act="toggle-theme" title="${themeIsDark() ? '切换为浅色' : '切换为夜间模式'}">${themeIsDark() ? '☀' : '☾'}</button>
+        <button class="trn-x" data-act="close-panel" title="关闭">✕</button>
+      </div>
     </div>
     ${bindCard}
     <button class="trn-entry" data-act="bar-new">
@@ -190,7 +207,7 @@ function renderPanel(pos) {
 
 function renderBig() {
   const settings = state.bigTab === 'settings';
-  const head = `<div class="trn-big-head">
+  const head = `<div class="trn-big-head" data-drag="big">
     <div class="trn-big-head-row">
       <div>
         <div class="trn-title">${settings ? '设置' : '项目管理'}</div>
@@ -263,11 +280,8 @@ function renderProjectDetail(project) {
       barShortLabel(b).toLowerCase().includes(keyword)
     );
   });
-  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  const page = Math.min(Math.max(1, state.manage.page), totalPages);
-  const pageRows = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const isBound = project.id === state.data.settings.boundProjectId;
-  const trs = pageRows
+  const trs = rows
     .map(
       (b) => `<tr>
       <td class="trn-num">${esc(barShortLabel(b))}</td>
@@ -316,7 +330,7 @@ function renderProjectDetail(project) {
     </div>
     <div class="trn-table-wrap">
       ${
-        pageRows.length
+        rows.length
           ? `<table class="trn-table">
         <thead><tr><th style="width:74px">棒数</th><th style="width:110px">作者</th><th style="width:82px">类型</th><th style="width:130px">接力时间</th><th style="width:82px">作品</th><th style="width:110px">操作</th></tr></thead>
         <tbody>${trs}</tbody>
@@ -326,7 +340,6 @@ function renderProjectDetail(project) {
     </div>
     <div class="trn-pager">
       <span>共 ${rows.length} 棒，普通棒与 EX 棒独立编号</span>
-      <div class="trn-pager-controls"><span>${page} / ${totalPages}</span></div>
     </div>`;
 }
 
@@ -351,6 +364,7 @@ function renderSettingsBody() {
   const dirName = state.data.settings.dirName || '未选择目录';
   const canDir = supportsDirectory();
   const fill = state.data.settings.fillMissingBars !== false;
+  const theme = state.data.settings.theme || 'auto';
 
   return `<div class="trn-settings">
     <div class="trn-section-title">棒类型设置</div>
@@ -385,6 +399,23 @@ function renderSettingsBody() {
       <button class="trn-btn sm" data-act="pick-dir"${canDir ? '' : ' disabled'}>更换目录</button>
     </div>
     <div class="trn-hint">不支持此 API 或未获得授权时，仍可通过「浏览器下载」导出。</div>
+
+    <div class="trn-section-title">外观</div>
+    <div class="trn-section-sub">决定侧边菜单与弹窗的明暗风格。</div>
+    <div class="trn-toggle-pair" style="margin-top:10px">
+      <button class="trn-toggle${theme === 'auto' ? ' is-on' : ''}" data-act="theme" data-id="auto">
+        <div class="trn-toggle-title"><span class="trn-dot"></span>跟随 B 站主题</div>
+        <div class="trn-toggle-sub">页面切到深色时，接力收集也自动变深色。</div>
+      </button>
+      <button class="trn-toggle${theme === 'dark' ? ' is-on' : ''}" data-act="theme" data-id="dark">
+        <div class="trn-toggle-title"><span class="trn-dot"></span>始终深色</div>
+        <div class="trn-toggle-sub">不看页面主题，固定使用夜间样式。</div>
+      </button>
+      <button class="trn-toggle${theme === 'light' ? ' is-on' : ''}" data-act="theme" data-id="light">
+        <div class="trn-toggle-title"><span class="trn-dot"></span>始终浅色</div>
+        <div class="trn-toggle-sub">不看页面主题，固定使用白天样式。</div>
+      </button>
+    </div>
 
     <div class="trn-section-title">导出细节</div>
     <div class="trn-toggle${fill ? ' is-on' : ''}" data-act="toggle-fill">
@@ -910,13 +941,18 @@ async function openBarForm(barId) {
   const scraped = await scrapeCurrentPage();
   const m = state.modal;
   if (!m || m.type !== 'bar' || m.barId) return;
+  const publishTime = scraped.publishedAt ? timeFromPublish(scraped.publishedAt, project) : null;
   if (!scraped.authorName && !scraped.workLink) {
-    state.modal = { ...m, scrapeMessage: page.type ? '未识别当前页面的作者，请手动填写' : '当前不是作品页面，请手动填写' };
+    state.modal = {
+      ...m,
+      draft: publishTime ? { ...m.draft, ...splitTime(publishTime.timeRaw) } : m.draft,
+      scrapeMessage: `${page.type ? '未识别当前页面的作者，请手动填写' : '当前不是作品页面，请手动填写'}${publishTime ? `；接力时间已按作品发布时间填入 ${publishTime.timeRaw}` : ''}`,
+    };
   } else {
     state.modal = {
       ...m,
-      draft: { ...m.draft, authorName: scraped.authorName || '', authorLink: scraped.authorLink || '', workLink: scraped.workLink || '' },
-      scrapeMessage: `已从${scraped.source === 'state' ? '页面数据' : scraped.source === 'api' ? '官方接口' : '页面元素'}填充作者与作品链接${prefill.note ? `；${prefill.note}` : ''}`,
+      draft: { ...m.draft, ...(publishTime ? splitTime(publishTime.timeRaw) : {}), authorName: scraped.authorName || '', authorLink: scraped.authorLink || '', workLink: scraped.workLink || '' },
+      scrapeMessage: `已从${scraped.source === 'state' ? '页面数据' : scraped.source === 'api' ? '官方接口' : '页面元素'}填充作者与作品链接${publishTime ? `；接力时间取作品发布时间 ${publishTime.timeRaw}` : ''}${prefill.note ? `；${prefill.note}` : ''}`,
     };
   }
   render();
@@ -1081,7 +1117,7 @@ function moveSortBar(id, delta) {
 }
 
 function togglePanel() {
-  if (state.view === 'panel' && state.pinned) {
+  if (state.view === 'panel') {
     state.pinned = false;
     state.view = 'closed';
   } else {
@@ -1093,6 +1129,48 @@ function togglePanel() {
 
 function bindEvents() {
   let drag = null;
+  let surfaceDrag = null;
+
+  root.addEventListener('pointerdown', (e) => {
+    const zone = e.target.closest('[data-drag]');
+    if (!zone || e.target.closest('button, input, select, textarea, a')) return;
+    const key = zone.dataset.drag;
+    const cur = state.offsets[key] || { x: 0, y: 0 };
+    const card = zone.closest('.trn-big, .trn-card, .trn-panel');
+    surfaceDrag = { key, sx: e.clientX, sy: e.clientY, ox: cur.x, oy: cur.y, zone, rect: card ? card.getBoundingClientRect() : null };
+    if (zone.setPointerCapture) {
+      try {
+        zone.setPointerCapture(e.pointerId);
+      } catch {}
+    }
+    root.classList.add('trn-dragging');
+  });
+
+  root.addEventListener('pointermove', (e) => {
+    if (!surfaceDrag) return;
+    let x = Math.round(surfaceDrag.ox + (e.clientX - surfaceDrag.sx));
+    let y = Math.round(surfaceDrag.oy + (e.clientY - surfaceDrag.sy));
+    const r = surfaceDrag.rect;
+    if (r) {
+      const keep = 160;
+      x = Math.min(x, window.innerWidth - keep - r.left);
+      x = Math.max(x, keep - r.width - r.left);
+      y = Math.min(y, window.innerHeight - keep - r.top);
+      y = Math.max(y, 60 - r.height - r.top);
+    }
+    root.style.setProperty(`--trn-${surfaceDrag.key}-x`, `${x}px`);
+    root.style.setProperty(`--trn-${surfaceDrag.key}-y`, `${y}px`);
+    surfaceDrag.x = x;
+    surfaceDrag.y = y;
+  });
+
+  root.addEventListener('pointerup', () => {
+    if (!surfaceDrag) return;
+    const d = surfaceDrag;
+    surfaceDrag = null;
+    root.classList.remove('trn-dragging');
+    if (d.x != null) state.offsets[d.key] = { x: d.x, y: d.y };
+  });
 
   root.addEventListener('pointerdown', (e) => {
     const tab = e.target.closest('.trn-tab');
@@ -1123,22 +1201,6 @@ function bindEvents() {
     }
   });
 
-  root.addEventListener('mouseover', (e) => {
-    if (!e.target.closest('.trn-tab')) return;
-    if (state.view !== 'closed') return;
-    state.view = 'panel';
-    render();
-  });
-
-  root.addEventListener('mouseout', (e) => {
-    if (state.pinned || state.view !== 'panel') return;
-    const panel = e.target.closest('.trn-panel');
-    if (!panel) return;
-    if (e.relatedTarget && panel.contains(e.relatedTarget)) return;
-    state.view = 'closed';
-    render();
-  });
-
   root.addEventListener('click', (e) => {
     const target = e.target.closest('[data-act]');
     if (!target || target.disabled) return;
@@ -1149,7 +1211,6 @@ function bindEvents() {
     const el = e.target;
     if (el.dataset && el.dataset.key === 'search') {
       state.manage.search = el.value;
-      state.manage.page = 1;
       state.focusKey = 'search';
       render();
     } else if (el.dataset && el.dataset.key === 'newType') {
@@ -1163,13 +1224,10 @@ function bindEvents() {
     if (e.key === 'Escape') {
       if (state.modal) {
         closeModal();
-      } else if (state.view === 'big') {
-        state.view = 'panel';
-        render();
-      } else if (state.view === 'panel') {
+      } else if (state.view === 'big' || state.view === 'panel') {
         state.pinned = false;
         state.view = 'closed';
-        render();
+          render();
       }
       return;
     }
@@ -1222,19 +1280,26 @@ function bindEvents() {
 
 function handleAction(act, id, target) {
   switch (act) {
+    case 'theme':
+      state.data.settings.theme = id;
+      persist();
+      render();
+      break;
+    case 'toggle-theme': {
+      state.data.settings.theme = themeIsDark() ? 'light' : 'dark';
+      persist();
+      render();
+      break;
+    }
     case 'close-panel':
       state.pinned = false;
       state.view = 'closed';
       render();
       break;
     case 'close-big':
-      if (state.bigTab === 'settings') {
-        state.bigTab = 'projects';
-        render();
-      } else {
-        state.view = 'panel';
-        render();
-      }
+      state.pinned = false;
+      state.view = 'closed';
+      render();
       break;
     case 'open-big':
       state.view = 'big';
@@ -1378,12 +1443,10 @@ function handleAction(act, id, target) {
       break;
     case 'switch-project':
       state.manage.projectId = id;
-      state.manage.page = 1;
       render();
       break;
     case 'filter':
       state.manage.filter = id;
-      state.manage.page = 1;
       render();
       break;
     case 'sort-open':

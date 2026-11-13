@@ -28,6 +28,7 @@ export function defaultData() {
       exportMode: 'directory',
       panelPosition: 42,
       dirName: '',
+      theme: 'auto',
     },
   };
 }
@@ -47,6 +48,7 @@ export function migrate(raw) {
     data.settings.boundProjectId = null;
   }
   if (!['directory', 'download'].includes(data.settings.exportMode)) data.settings.exportMode = 'directory';
+  if (!['auto', 'dark', 'light'].includes(data.settings.theme)) data.settings.theme = 'auto';
   const pos = Number(data.settings.panelPosition);
   data.settings.panelPosition = Number.isFinite(pos) ? Math.min(95, Math.max(5, pos)) : 42;
   data.settings.fillMissingBars = data.settings.fillMissingBars !== false;
@@ -186,6 +188,26 @@ export function suggestBarPrefill(data, project, kind) {
     }
   }
   return { number, minutes, timeRaw: formatTime(minutes), note };
+}
+
+export function timeFromPublish(publishedAt, project) {
+  const d = new Date(Number(publishedAt));
+  if (!Number.isFinite(d.getTime())) return null;
+  const pubDay = todayString(d);
+  const tod = d.getHours() * 60 + d.getMinutes();
+  let dayOffset = 0;
+  let note = '';
+  if (project && project.eventDate) {
+    const ev = Date.parse(`${project.eventDate}T00:00:00`);
+    const pub = Date.parse(`${pubDay}T00:00:00`);
+    if (Number.isFinite(ev) && Number.isFinite(pub)) {
+      const diff = Math.round((pub - ev) / 86400000);
+      if (diff === 0 || diff === 1) dayOffset = diff;
+      else note = '作品发布时间不在活动当天，只取了时分';
+    }
+  }
+  const minutes = dayOffset * 1440 + tod;
+  return { minutes, timeRaw: formatTime(minutes), note };
 }
 
 export function addDays(dateStr, days) {

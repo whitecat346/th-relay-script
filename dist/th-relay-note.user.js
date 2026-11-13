@@ -46,6 +46,7 @@ function defaultData() {
       exportMode: 'directory',
       panelPosition: 42,
       dirName: '',
+      theme: 'auto',
     },
   };
 }
@@ -65,6 +66,7 @@ function migrate(raw) {
     data.settings.boundProjectId = null;
   }
   if (!['directory', 'download'].includes(data.settings.exportMode)) data.settings.exportMode = 'directory';
+  if (!['auto', 'dark', 'light'].includes(data.settings.theme)) data.settings.theme = 'auto';
   const pos = Number(data.settings.panelPosition);
   data.settings.panelPosition = Number.isFinite(pos) ? Math.min(95, Math.max(5, pos)) : 42;
   data.settings.fillMissingBars = data.settings.fillMissingBars !== false;
@@ -204,6 +206,26 @@ function suggestBarPrefill(data, project, kind) {
     }
   }
   return { number, minutes, timeRaw: formatTime(minutes), note };
+}
+
+function timeFromPublish(publishedAt, project) {
+  const d = new Date(Number(publishedAt));
+  if (!Number.isFinite(d.getTime())) return null;
+  const pubDay = todayString(d);
+  const tod = d.getHours() * 60 + d.getMinutes();
+  let dayOffset = 0;
+  let note = '';
+  if (project && project.eventDate) {
+    const ev = Date.parse(`${project.eventDate}T00:00:00`);
+    const pub = Date.parse(`${pubDay}T00:00:00`);
+    if (Number.isFinite(ev) && Number.isFinite(pub)) {
+      const diff = Math.round((pub - ev) / 86400000);
+      if (diff === 0 || diff === 1) dayOffset = diff;
+      else note = '作品发布时间不在活动当天，只取了时分';
+    }
+  }
+  const minutes = dayOffset * 1440 + tod;
+  return { minutes, timeRaw: formatTime(minutes), note };
 }
 
 function addDays(dateStr, days) {
@@ -448,16 +470,29 @@ function pickOwner(owner) {
   return { authorName: name, authorLink: space(mid) };
 }
 
+function pickPublishTime(...candidates) {
+  for (const c of candidates) {
+    if (c == null || c === '' || c === 0) continue;
+    const n = typeof c === 'number' ? c : Number(c);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    return n < 1e12 ? n * 1000 : n;
+  }
+  return null;
+}
+
 function fromStateVideo() {
   const state = pageWindow().__INITIAL_STATE__;
   const data = state && state.videoData;
-  return pickOwner(data && data.owner);
+  const owner = pickOwner(data && data.owner);
+  if (!owner && !data) return null;
+  return { ...(owner || {}), publishedAt: pickPublishTime(data && data.pubdate, data && data.ctime) };
 }
 
 function fromStateRead() {
   const state = pageWindow().__INITIAL_STATE__;
   if (!state) return null;
   const info = state.readInfo || {};
+  const publishedAt = pickPublishTime(info.publish_time, info.pubtime, info.pub_time, state.readInfo && state.readInfo.articleInfo && state.readInfo.articleInfo.publish_time);
   const candidates = [
     info.author,
     state.readInfo && state.readInfo.author,
@@ -467,12 +502,12 @@ function fromStateRead() {
   ].filter(Boolean);
   for (const c of candidates) {
     const owner = pickOwner(c);
-    if (owner) return owner;
+    if (owner) return { ...owner, publishedAt };
   }
   if (info.author_name || info.mid) {
-    return { authorName: String(info.author_name || '').trim(), authorLink: space(info.mid) };
+    return { authorName: String(info.author_name || '').trim(), authorLink: space(info.mid), publishedAt };
   }
-  return null;
+  return publishedAt ? { authorName: '', authorLink: '', publishedAt } : null;
 }
 
 function fromStateOpus() {
@@ -482,7 +517,10 @@ function fromStateOpus() {
   const modules = detail.modules || (detail.item && detail.item.modules) || [];
   const author = modules.find((m) => m && (m.module_type === 'MODULE_TYPE_AUTHOR' || m.module_author));
   const ma = author && (author.module_author || author);
-  return pickOwner(ma);
+  const owner = pickOwner(ma);
+  const publishedAt = pickPublishTime(ma && ma.pub_ts, detail.basic && detail.basic.pub_ts, detail.item && detail.item.basic && detail.item.basic.pub_ts);
+  if (!owner) return publishedAt ? { authorName: '', authorLink: '', publishedAt } : null;
+  return { ...owner, publishedAt };
 }
 
 function fromDom() {
@@ -504,6 +542,7 @@ async function scrapeCurrentPage() {
     workLink: page.type ? page.url : '',
     authorName: '',
     authorLink: '',
+    publishedAt: null,
     source: '',
   };
   if (!page.type) return result;
@@ -511,7 +550,7 @@ async function scrapeCurrentPage() {
   const fromState = page.type === 'video' ? fromStateVideo : page.type === 'read' ? fromStateRead : fromStateOpus;
   try {
     const owner = fromState();
-    if (owner && (owner.authorName || owner.authorLink)) {
+    if (owner && (owner.authorName || owner.authorLink || owner.publishedAt)) {
       return { ...result, ...owner, source: 'state' };
     }
   } catch {}
@@ -520,19 +559,20 @@ async function scrapeCurrentPage() {
     let owner = null;
     if (page.type === 'video') {
       const json = await fetchJson(`https://api.bilibili.com/x/web-interface/view?bvid=${page.id}`);
-      owner = pickOwner(json.data && json.data.owner);
+      const d = (json.data || {});
+      owner = { ...(pickOwner(d.owner) || {}), publishedAt: pickPublishTime(d.pubdate) };
     } else if (page.type === 'read') {
       const json = await fetchJson(`https://api.bilibili.com/x/article/viewinfo?id=cv${page.id}`);
       const d = json.data || {};
-      owner = { authorName: String(d.author_name || d.name || '').trim(), authorLink: space(d.mid) };
+      owner = { authorName: String(d.author_name || d.name || '').trim(), authorLink: space(d.mid), publishedAt: pickPublishTime(d.publish_time, d.ctime) };
     } else {
       const json = await fetchJson(`https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=${page.id}`);
       const item = (json.data && json.data.item) || {};
       const author = (item.modules || []).find((m) => m && m.module_type === 'MODULE_TYPE_AUTHOR');
       const ma = author && (author.module_author || author);
-      owner = pickOwner(ma);
+      owner = { ...(pickOwner(ma) || {}), publishedAt: pickPublishTime(ma && ma.pub_ts) };
     }
-    if (owner && (owner.authorName || owner.authorLink)) {
+    if (owner && (owner.authorName || owner.authorLink || owner.publishedAt)) {
       return { ...result, ...owner, source: 'api' };
     }
   } catch {}
@@ -707,26 +747,34 @@ const CSS = `
 .trn-root ::-webkit-scrollbar-track { background: transparent; }
 
 .trn-tab {
-  position: fixed; right: 0; top: 42%; z-index: 2147483000;
+  position: fixed; right: 14px; top: 42%; z-index: 2147483000;
   writing-mode: vertical-rl; letter-spacing: 3px;
-  padding: 14px 8px; border-radius: 10px 0 0 10px;
+  padding: 14px 8px; border-radius: 10px;
   background: linear-gradient(160deg, #7f6ff0, #6250d4);
   color: #fff; font-size: 13px; font-weight: 600;
-  box-shadow: -2px 4px 14px rgba(107, 91, 219, 0.35);
+  box-shadow: 0 4px 14px rgba(107, 91, 219, 0.35);
   user-select: none; touch-action: none;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
 }
-.trn-tab:hover { background: linear-gradient(160deg, #8b7af5, #6b58e0); }
+.trn-tab:hover { background: linear-gradient(160deg, #8b7af5, #6b58e0); transform: translateX(-3px); }
 
 .trn-backdrop { position: fixed; inset: 0; z-index: 2147483000; background: rgba(20, 21, 31, 0.28); }
 .trn-backdrop.clear { background: transparent; }
 
 .trn-panel {
-  position: fixed; right: 18px; z-index: 2147483001;
+  position: fixed; right: 56px; z-index: 2147483001;
   width: 338px; max-height: 84vh; overflow: auto;
   background: var(--trn-bg); border-radius: 18px; box-shadow: var(--trn-shadow);
   padding: 20px 20px 4px;
+  transform: translate(var(--trn-panel-x, 0px), var(--trn-panel-y, 0px));
 }
 .trn-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+[data-drag] { cursor: grab; touch-action: none; }
+.trn-dragging [data-drag] { cursor: grabbing; }
+.trn-dragging .trn-root, .trn-dragging { user-select: none; }
+.trn-panel-tools { display: flex; align-items: center; gap: 4px; }
+.trn-icon-btn { width: 26px; height: 26px; border-radius: 50%; color: var(--trn-sub); font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.trn-icon-btn:hover { background: var(--trn-bg-soft); color: var(--trn-text); }
 .trn-title { font-size: 19px; font-weight: 700; letter-spacing: 0.2px; }
 .trn-sub { color: var(--trn-sub); font-size: 12px; margin-top: 4px; }
 .trn-x { width: 26px; height: 26px; border-radius: 50%; color: var(--trn-sub); font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; }
@@ -747,7 +795,8 @@ const CSS = `
 .trn-panel-foot { margin: 10px -20px 0; padding: 10px 20px; border-top: 1px solid var(--trn-border); color: var(--trn-placeholder); font-size: 11px; }
 
 .trn-card {
-  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  position: fixed; left: 50%; top: 50%;
+  transform: translate(-50%, -50%) translate(var(--trn-modal-x, 0px), var(--trn-modal-y, 0px));
   z-index: 2147483002; display: flex; flex-direction: column;
   background: var(--trn-bg); border-radius: 18px; box-shadow: var(--trn-shadow);
   max-height: 88vh; max-width: 94vw;
@@ -817,7 +866,8 @@ const CSS = `
 .trn-inline-add { display: flex; gap: 8px; margin-top: 8px; }
 
 .trn-big {
-  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  position: fixed; left: 50%; top: 50%;
+  transform: translate(-50%, -50%) translate(var(--trn-big-x, 0px), var(--trn-big-y, 0px));
   z-index: 2147483002; display: flex; flex-direction: column;
   width: min(1160px, 94vw); height: min(820px, 90vh);
   background: var(--trn-bg); border-radius: 18px; box-shadow: var(--trn-shadow); overflow: hidden;
@@ -953,7 +1003,7 @@ function field({ label, name, value = '', placeholder = '', hint = '', error = '
 function modalShell({ title, badge = '', subtitle = '', width = 560, body = '', footer = '', footNote = '', scroll = false }) {
   return `<div class="trn-backdrop" data-act="close-modal"></div>
   <div class="trn-card" style="width:${width}px">
-    <div class="trn-card-head">
+    <div class="trn-card-head" data-drag="modal">
       <div>
         ${badge ? `<div class="trn-badge">${esc(badge)}</div>` : ''}
         <div class="trn-title">${esc(title)}</div>
@@ -974,8 +1024,6 @@ function pad2(n) {
 }
 
 // ---- src/ui/app.js ----
-const PAGE_SIZE = 20;
-
 const state = {
   data: null,
   view: 'closed',
@@ -984,6 +1032,7 @@ const state = {
   manage: { projectId: null, search: '', filter: 'all', page: 1 },
   toast: null,
   pinned: false,
+  offsets: { big: { x: 0, y: 0 }, modal: { x: 0, y: 0 }, panel: { x: 0, y: 0 } },
   newTypeValue: '',
   focusKey: null,
   dragId: null,
@@ -1026,6 +1075,7 @@ function closeModal() {
 }
 
 function openModal(modal) {
+  if (state.offsets.modal.x || state.offsets.modal.y) state.offsets.modal = { x: 0, y: 0 };
   state.modal = modal;
   render();
 }
@@ -1071,10 +1121,23 @@ function mount(host, options = {}) {
   render();
 }
 
+function themeIsDark() {
+  const theme = state.data.settings.theme || 'auto';
+  if (theme === 'dark') return true;
+  if (theme === 'light') return false;
+  return document.documentElement.classList.contains('bili_dark');
+}
+
 function render() {
   if (!root) return;
   const pos = Number(state.data.settings.panelPosition) || 42;
-  root.className = `trn-root${document.documentElement.classList.contains('bili_dark') ? ' trn-dark' : ''}`;
+  root.className = `trn-root${themeIsDark() ? ' trn-dark' : ''}`;
+  root.style.setProperty('--trn-big-x', `${state.offsets.big.x}px`);
+  root.style.setProperty('--trn-big-y', `${state.offsets.big.y}px`);
+  root.style.setProperty('--trn-modal-x', `${state.offsets.modal.x}px`);
+  root.style.setProperty('--trn-modal-y', `${state.offsets.modal.y}px`);
+  root.style.setProperty('--trn-panel-x', `${state.offsets.panel.x}px`);
+  root.style.setProperty('--trn-panel-y', `${state.offsets.panel.y}px`);
   const parts = [`<button class="trn-tab" style="top:${pos}%">接力收集</button>`];
   if (state.view === 'panel') parts.push(renderPanel(pos));
   if (state.view === 'big') parts.push(renderBig());
@@ -1113,12 +1176,15 @@ function renderPanel(pos) {
       </div>`
     : '<div class="trn-bind-empty">尚未绑定项目，创建一个或在项目管理中选择。</div>';
   return `<div class="trn-panel" style="${pos > 55 ? 'bottom:70px' : 'top:96px'}">
-    <div class="trn-panel-head">
+    <div class="trn-panel-head" data-drag="panel">
       <div>
         <div class="trn-title">接力收集</div>
         <div class="trn-sub">在 BiliBili，接住每一份创作。</div>
       </div>
-      <button class="trn-x" data-act="close-panel" title="关闭">✕</button>
+      <div class="trn-panel-tools">
+        <button class="trn-icon-btn" data-act="toggle-theme" title="${themeIsDark() ? '切换为浅色' : '切换为夜间模式'}">${themeIsDark() ? '☀' : '☾'}</button>
+        <button class="trn-x" data-act="close-panel" title="关闭">✕</button>
+      </div>
     </div>
     ${bindCard}
     <button class="trn-entry" data-act="bar-new">
@@ -1143,7 +1209,7 @@ function renderPanel(pos) {
 
 function renderBig() {
   const settings = state.bigTab === 'settings';
-  const head = `<div class="trn-big-head">
+  const head = `<div class="trn-big-head" data-drag="big">
     <div class="trn-big-head-row">
       <div>
         <div class="trn-title">${settings ? '设置' : '项目管理'}</div>
@@ -1216,11 +1282,8 @@ function renderProjectDetail(project) {
       barShortLabel(b).toLowerCase().includes(keyword)
     );
   });
-  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  const page = Math.min(Math.max(1, state.manage.page), totalPages);
-  const pageRows = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const isBound = project.id === state.data.settings.boundProjectId;
-  const trs = pageRows
+  const trs = rows
     .map(
       (b) => `<tr>
       <td class="trn-num">${esc(barShortLabel(b))}</td>
@@ -1269,7 +1332,7 @@ function renderProjectDetail(project) {
     </div>
     <div class="trn-table-wrap">
       ${
-        pageRows.length
+        rows.length
           ? `<table class="trn-table">
         <thead><tr><th style="width:74px">棒数</th><th style="width:110px">作者</th><th style="width:82px">类型</th><th style="width:130px">接力时间</th><th style="width:82px">作品</th><th style="width:110px">操作</th></tr></thead>
         <tbody>${trs}</tbody>
@@ -1279,7 +1342,6 @@ function renderProjectDetail(project) {
     </div>
     <div class="trn-pager">
       <span>共 ${rows.length} 棒，普通棒与 EX 棒独立编号</span>
-      <div class="trn-pager-controls"><span>${page} / ${totalPages}</span></div>
     </div>`;
 }
 
@@ -1304,6 +1366,7 @@ function renderSettingsBody() {
   const dirName = state.data.settings.dirName || '未选择目录';
   const canDir = supportsDirectory();
   const fill = state.data.settings.fillMissingBars !== false;
+  const theme = state.data.settings.theme || 'auto';
 
   return `<div class="trn-settings">
     <div class="trn-section-title">棒类型设置</div>
@@ -1338,6 +1401,23 @@ function renderSettingsBody() {
       <button class="trn-btn sm" data-act="pick-dir"${canDir ? '' : ' disabled'}>更换目录</button>
     </div>
     <div class="trn-hint">不支持此 API 或未获得授权时，仍可通过「浏览器下载」导出。</div>
+
+    <div class="trn-section-title">外观</div>
+    <div class="trn-section-sub">决定侧边菜单与弹窗的明暗风格。</div>
+    <div class="trn-toggle-pair" style="margin-top:10px">
+      <button class="trn-toggle${theme === 'auto' ? ' is-on' : ''}" data-act="theme" data-id="auto">
+        <div class="trn-toggle-title"><span class="trn-dot"></span>跟随 B 站主题</div>
+        <div class="trn-toggle-sub">页面切到深色时，接力收集也自动变深色。</div>
+      </button>
+      <button class="trn-toggle${theme === 'dark' ? ' is-on' : ''}" data-act="theme" data-id="dark">
+        <div class="trn-toggle-title"><span class="trn-dot"></span>始终深色</div>
+        <div class="trn-toggle-sub">不看页面主题，固定使用夜间样式。</div>
+      </button>
+      <button class="trn-toggle${theme === 'light' ? ' is-on' : ''}" data-act="theme" data-id="light">
+        <div class="trn-toggle-title"><span class="trn-dot"></span>始终浅色</div>
+        <div class="trn-toggle-sub">不看页面主题，固定使用白天样式。</div>
+      </button>
+    </div>
 
     <div class="trn-section-title">导出细节</div>
     <div class="trn-toggle${fill ? ' is-on' : ''}" data-act="toggle-fill">
@@ -1863,13 +1943,18 @@ async function openBarForm(barId) {
   const scraped = await scrapeCurrentPage();
   const m = state.modal;
   if (!m || m.type !== 'bar' || m.barId) return;
+  const publishTime = scraped.publishedAt ? timeFromPublish(scraped.publishedAt, project) : null;
   if (!scraped.authorName && !scraped.workLink) {
-    state.modal = { ...m, scrapeMessage: page.type ? '未识别当前页面的作者，请手动填写' : '当前不是作品页面，请手动填写' };
+    state.modal = {
+      ...m,
+      draft: publishTime ? { ...m.draft, ...splitTime(publishTime.timeRaw) } : m.draft,
+      scrapeMessage: `${page.type ? '未识别当前页面的作者，请手动填写' : '当前不是作品页面，请手动填写'}${publishTime ? `；接力时间已按作品发布时间填入 ${publishTime.timeRaw}` : ''}`,
+    };
   } else {
     state.modal = {
       ...m,
-      draft: { ...m.draft, authorName: scraped.authorName || '', authorLink: scraped.authorLink || '', workLink: scraped.workLink || '' },
-      scrapeMessage: `已从${scraped.source === 'state' ? '页面数据' : scraped.source === 'api' ? '官方接口' : '页面元素'}填充作者与作品链接${prefill.note ? `；${prefill.note}` : ''}`,
+      draft: { ...m.draft, ...(publishTime ? splitTime(publishTime.timeRaw) : {}), authorName: scraped.authorName || '', authorLink: scraped.authorLink || '', workLink: scraped.workLink || '' },
+      scrapeMessage: `已从${scraped.source === 'state' ? '页面数据' : scraped.source === 'api' ? '官方接口' : '页面元素'}填充作者与作品链接${publishTime ? `；接力时间取作品发布时间 ${publishTime.timeRaw}` : ''}${prefill.note ? `；${prefill.note}` : ''}`,
     };
   }
   render();
@@ -2034,7 +2119,7 @@ function moveSortBar(id, delta) {
 }
 
 function togglePanel() {
-  if (state.view === 'panel' && state.pinned) {
+  if (state.view === 'panel') {
     state.pinned = false;
     state.view = 'closed';
   } else {
@@ -2046,6 +2131,48 @@ function togglePanel() {
 
 function bindEvents() {
   let drag = null;
+  let surfaceDrag = null;
+
+  root.addEventListener('pointerdown', (e) => {
+    const zone = e.target.closest('[data-drag]');
+    if (!zone || e.target.closest('button, input, select, textarea, a')) return;
+    const key = zone.dataset.drag;
+    const cur = state.offsets[key] || { x: 0, y: 0 };
+    const card = zone.closest('.trn-big, .trn-card, .trn-panel');
+    surfaceDrag = { key, sx: e.clientX, sy: e.clientY, ox: cur.x, oy: cur.y, zone, rect: card ? card.getBoundingClientRect() : null };
+    if (zone.setPointerCapture) {
+      try {
+        zone.setPointerCapture(e.pointerId);
+      } catch {}
+    }
+    root.classList.add('trn-dragging');
+  });
+
+  root.addEventListener('pointermove', (e) => {
+    if (!surfaceDrag) return;
+    let x = Math.round(surfaceDrag.ox + (e.clientX - surfaceDrag.sx));
+    let y = Math.round(surfaceDrag.oy + (e.clientY - surfaceDrag.sy));
+    const r = surfaceDrag.rect;
+    if (r) {
+      const keep = 160;
+      x = Math.min(x, window.innerWidth - keep - r.left);
+      x = Math.max(x, keep - r.width - r.left);
+      y = Math.min(y, window.innerHeight - keep - r.top);
+      y = Math.max(y, 60 - r.height - r.top);
+    }
+    root.style.setProperty(`--trn-${surfaceDrag.key}-x`, `${x}px`);
+    root.style.setProperty(`--trn-${surfaceDrag.key}-y`, `${y}px`);
+    surfaceDrag.x = x;
+    surfaceDrag.y = y;
+  });
+
+  root.addEventListener('pointerup', () => {
+    if (!surfaceDrag) return;
+    const d = surfaceDrag;
+    surfaceDrag = null;
+    root.classList.remove('trn-dragging');
+    if (d.x != null) state.offsets[d.key] = { x: d.x, y: d.y };
+  });
 
   root.addEventListener('pointerdown', (e) => {
     const tab = e.target.closest('.trn-tab');
@@ -2076,22 +2203,6 @@ function bindEvents() {
     }
   });
 
-  root.addEventListener('mouseover', (e) => {
-    if (!e.target.closest('.trn-tab')) return;
-    if (state.view !== 'closed') return;
-    state.view = 'panel';
-    render();
-  });
-
-  root.addEventListener('mouseout', (e) => {
-    if (state.pinned || state.view !== 'panel') return;
-    const panel = e.target.closest('.trn-panel');
-    if (!panel) return;
-    if (e.relatedTarget && panel.contains(e.relatedTarget)) return;
-    state.view = 'closed';
-    render();
-  });
-
   root.addEventListener('click', (e) => {
     const target = e.target.closest('[data-act]');
     if (!target || target.disabled) return;
@@ -2102,7 +2213,6 @@ function bindEvents() {
     const el = e.target;
     if (el.dataset && el.dataset.key === 'search') {
       state.manage.search = el.value;
-      state.manage.page = 1;
       state.focusKey = 'search';
       render();
     } else if (el.dataset && el.dataset.key === 'newType') {
@@ -2116,13 +2226,10 @@ function bindEvents() {
     if (e.key === 'Escape') {
       if (state.modal) {
         closeModal();
-      } else if (state.view === 'big') {
-        state.view = 'panel';
-        render();
-      } else if (state.view === 'panel') {
+      } else if (state.view === 'big' || state.view === 'panel') {
         state.pinned = false;
         state.view = 'closed';
-        render();
+          render();
       }
       return;
     }
@@ -2175,19 +2282,26 @@ function bindEvents() {
 
 function handleAction(act, id, target) {
   switch (act) {
+    case 'theme':
+      state.data.settings.theme = id;
+      persist();
+      render();
+      break;
+    case 'toggle-theme': {
+      state.data.settings.theme = themeIsDark() ? 'light' : 'dark';
+      persist();
+      render();
+      break;
+    }
     case 'close-panel':
       state.pinned = false;
       state.view = 'closed';
       render();
       break;
     case 'close-big':
-      if (state.bigTab === 'settings') {
-        state.bigTab = 'projects';
-        render();
-      } else {
-        state.view = 'panel';
-        render();
-      }
+      state.pinned = false;
+      state.view = 'closed';
+      render();
       break;
     case 'open-big':
       state.view = 'big';
@@ -2331,12 +2445,10 @@ function handleAction(act, id, target) {
       break;
     case 'switch-project':
       state.manage.projectId = id;
-      state.manage.page = 1;
       render();
       break;
     case 'filter':
       state.manage.filter = id;
-      state.manage.page = 1;
       render();
       break;
     case 'sort-open':
