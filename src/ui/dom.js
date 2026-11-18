@@ -25,7 +25,7 @@ export function modalShell({ title, badge = '', subtitle = '', width = 560, body
       </div>
       <button class="trn-x" data-act="close-modal" title="关闭">✕</button>
     </div>
-    <div class="trn-card-body" style="${scroll ? 'max-height:58vh' : ''}">${body}</div>
+    <div class="trn-card-body" data-scroll="card" style="${scroll ? 'max-height:58vh' : ''}">${body}</div>
     <div class="trn-card-foot">
       <span class="trn-foot-note">${esc(footNote)}</span>
       <div style="display:flex;gap:10px">${footer}</div>

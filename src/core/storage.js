@@ -14,10 +14,18 @@ function rawRead() {
   }
 }
 
-function rawWrite(value) {
+function rawWriteKey(key, value) {
   const text = JSON.stringify(value);
-  if (HAS_GM) GM_setValue(KEY, text);
-  else window.localStorage.setItem(KEY, text);
+  if (HAS_GM) GM_setValue(key, text);
+  else window.localStorage.setItem(key, text);
+}
+
+function rawWrite(value) {
+  rawWriteKey(KEY, value);
+}
+
+export function saveSnapshot(data) {
+  rawWriteKey(`${KEY}__preImportAt`, { at: Date.now(), data });
 }
 
 export function loadData() {

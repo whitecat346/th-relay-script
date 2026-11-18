@@ -299,3 +299,48 @@ docs/                   # 本文件 + 使用说明
 4. Firefox 不支持 FSA（全球支持率约 30.6%），下载是主路径之一。
 5. Shadow DOM 下字体不继承、滚动条样式受限，需显式 `font-family: inherit` 与自绘滚动条。
 6. 暗色判定用 `bili_dark` class；`data-theme` 属性**不存在**，不要用。
+
+---
+
+## 12. 2026-11-18 修订（第五轮）：数据备份与界面动画
+
+### 12.1 备份导出
+
+- 「设置 → 数据备份」显示当前数据量（项目 / 棒记录 / 类型数）与上次导出时间。
+- 导出文件名为 `接力收集备份_YYYYMMDD_HHmm.json`，内容是带信封的 JSON：`{app:'th-relay-note', schemaVersion, exportedAt, counts, data}`，缩进 2 空格便于 diff。
+- 若导出设置已选定目录且 IndexedDB 里有目录句柄，直接写入该目录；否则回退浏览器下载。
+- 导出成功后记录 `settings.lastBackupAt`，界面显示「上次导出：YYYY-MM-DD HH:mm」。
+
+### 12.2 备份导入
+
+- 选择文件后先解析校验：非 JSON、或顶层（含 `data` 内层）缺少 `projects` / `bars` 数组的 JSON 一律拒绝并给出说明；裸数据（无信封）也接受。
+- 解析成功先弹确认窗，展示「备份包含 N 个项目 · M 条棒记录 · K 种类型」与备份导出时间，并给出两种模式：
+  - **替换**（默认）：整体覆盖当前数据；`boundProjectId` 等悬空引用由 `migrate()` 自动清理。
+  - **合并**：类型按名称去重；棒与项目 id 冲突时重新分配 id 并修复 `barOrder` / `projectId` 引用；孤儿棒丢弃；`settings` 保持当前值不被覆盖。
+- 两种模式在写入前都会把当前数据快照存入存储键 `relayNoteData__preImportAt`，供事后回退。
+
+### 12.3 界面动画
+
+- 只在场景切换时播放；同场景重渲染（输入、切类型 chip、切排序模式）不会重播。判据是 `state.prev` 记录的 `view`、`bigTab`、`modal.type:id`、`toast` 文本，未变化就不加动画类。
+- 动画清单：面板滑入 `trn-anim-slide`（右移 18px + 淡入 0.24s）、大窗弹出 `trn-anim-pop`（0.94→1 缩放 + 淡入 0.2s）、大窗内页切换 `trn-anim-fade`、弹窗背景 `trn-anim-fade` + 卡片 `trn-anim-pop`、toast `trn-anim-rise`（上移 10px + 淡入）。
+- 关键帧只用独立的 `scale` / `translate` 属性，不覆盖元素原有的 `transform`（弹窗与面板的居中、拖动偏移都写在 transform 上）。
+- 按钮、chip、开关、侧栏项、表格行加了 `transition` 与按下位移；关闭动画时整棵子树 `animation/transition: none`，并遵守系统 `prefers-reduced-motion`。
+- 开关入口在「设置 → 外观 → 界面动画」，状态存 `settings.animations`（默认开）。
+
+### 12.4 验收
+
+- `node test/backup.test.js` 7 项通过；`export-md` 9 项、`model` 3 项保持通过。
+- 夹具 E2E 54 项断言通过：新增动画判据（面板 / 弹窗进场、同场景不重播）、备份小节存在且单行不换行、导入确认窗计数文案、替换导入后数据与绑定被清理、导入前快照写入、备份内 `animations:false` 立即生效、合并导入后项目与棒数翻倍且主题保持不变。
+
+### 12.5 2026-11-18 修订（第六轮）：重渲染不再丢失滚动与焦点
+
+问题：界面每次状态变化都用 `root.innerHTML` 全量重建，滚动位置与输入焦点随之丢失——在项目管理页加棒、在设置页切换任意选项，页面都会跳回顶部。
+
+做法：
+
+- 在会滚动的容器上打 `data-scroll` 标记：`panel`（侧边面板）、`side`（项目列表）、`table`（棒表格）、`settings`（设置页）、`card`（弹窗正文）。
+- `render()` 重建前用 `captureScroll()` 记录各容器的 `scrollTop`/`scrollLeft`，重建后 `restoreScroll()` 写回；只记录偏移不为 0 的容器。
+- 同一次重建里用 `captureFocus()` / `restoreCapturedFocus()` 保存并恢复焦点元素（按 `tag|data-role|name|data-act|data-id` 组合识别）与文本选区，所以边打字边触发的重渲染不会打断输入；原有的 `state.focusKey`（搜索框）机制优先级更高。
+- 例外：切换项目、删除当前项目时把 `state.skipScroll` 置为 `'table'`，表格滚动归零（换项目后从顶部看起更自然），一次性生效。
+- 顺带修掉一个多余重渲染：`mount()` 里 IndexedDB 目录句柄解析完成后无条件 `render()`，即使 `dirName` 没变也会重画一次，可能打断刚打开面板的进场动画。现在只有名称确实变化才重画（这也是此前夹具 `panelAnim` 偶发为 false 的原因）。
+

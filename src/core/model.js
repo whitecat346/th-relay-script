@@ -29,6 +29,8 @@ export function defaultData() {
       panelPosition: 42,
       dirName: '',
       theme: 'auto',
+      animations: true,
+      lastBackupAt: 0,
     },
   };
 }
@@ -52,6 +54,8 @@ export function migrate(raw) {
   const pos = Number(data.settings.panelPosition);
   data.settings.panelPosition = Number.isFinite(pos) ? Math.min(95, Math.max(5, pos)) : 42;
   data.settings.fillMissingBars = data.settings.fillMissingBars !== false;
+  data.settings.animations = data.settings.animations !== false;
+  data.settings.lastBackupAt = Number(data.settings.lastBackupAt) || 0;
   return data;
 }
 

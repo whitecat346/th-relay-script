@@ -286,4 +286,27 @@ export const CSS = `
 .trn-note-row .trn-input { flex: 1 1 0; }
 .trn-note-row .trn-input.label { flex: 0 0 96px; }
 .trn-note-row .trn-x { width: 30px; height: 30px; align-self: center; border: 1px solid var(--trn-border); }
+
+.trn-backup { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--trn-border); border-radius: 11px; padding: 11px 14px; margin-top: 12px; }
+.trn-backup-ops { display: flex; gap: 8px; flex: 0 0 auto; }
+
+@keyframes trn-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes trn-pop { from { opacity: 0; scale: 0.94; } to { opacity: 1; scale: 1; } }
+@keyframes trn-rise { from { opacity: 0; translate: 0 10px; } to { opacity: 1; translate: 0 0; } }
+@keyframes trn-slide { from { opacity: 0; translate: 18px 0; } to { opacity: 1; translate: 0 0; } }
+.trn-anim-fade { animation: trn-fade 0.18s ease both; }
+.trn-anim-pop { animation: trn-pop 0.2s cubic-bezier(0.22, 0.8, 0.3, 1) both; }
+.trn-anim-rise { animation: trn-rise 0.22s cubic-bezier(0.22, 0.8, 0.3, 1) both; }
+.trn-anim-slide { animation: trn-slide 0.24s cubic-bezier(0.22, 0.8, 0.3, 1) both; }
+.trn-root.trn-no-anim * { animation: none !important; transition: none !important; }
+
+.trn-btn, .trn-chip, .trn-toggle, .trn-side-item, .trn-entry, .trn-tabbtn, .trn-icon-btn, .trn-x, .trn-add-project, .trn-move { transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease, opacity 0.15s ease; }
+.trn-btn:active, .trn-chip:active, .trn-toggle:active, .trn-entry:active { transform: translateY(1px); }
+.trn-toggle:not(.is-on):hover, .trn-dir:hover, .trn-backup:hover { border-color: var(--trn-border-strong); }
+.trn-table td { transition: background 0.14s ease; }
+.trn-card, .trn-big { transition: box-shadow 0.2s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .trn-root * { animation: none !important; transition-duration: 0.01s !important; }
+}
 `;

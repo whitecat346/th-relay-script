@@ -89,8 +89,8 @@ export async function saveToDirectory(dir, filename, text) {
   return filename;
 }
 
-export function downloadText(text, filename) {
-  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+export function downloadText(text, filename, mime = 'text/markdown;charset=utf-8') {
+  const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

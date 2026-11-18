@@ -47,6 +47,8 @@ function defaultData() {
       panelPosition: 42,
       dirName: '',
       theme: 'auto',
+      animations: true,
+      lastBackupAt: 0,
     },
   };
 }
@@ -70,6 +72,8 @@ function migrate(raw) {
   const pos = Number(data.settings.panelPosition);
   data.settings.panelPosition = Number.isFinite(pos) ? Math.min(95, Math.max(5, pos)) : 42;
   data.settings.fillMissingBars = data.settings.fillMissingBars !== false;
+  data.settings.animations = data.settings.animations !== false;
+  data.settings.lastBackupAt = Number(data.settings.lastBackupAt) || 0;
   return data;
 }
 
@@ -374,6 +378,103 @@ function missingNumbers(bars, kind) {
   return miss;
 }
 
+// ---- src/core/backup.js ----
+const BACKUP_APP = 'th-relay-note';
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+function backupFileName(now = new Date()) {
+  return `接力收集备份_${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}_${pad2(now.getHours())}${pad2(now.getMinutes())}.json`;
+}
+
+function buildBackup(data, now = new Date()) {
+  return JSON.stringify(
+    {
+      app: BACKUP_APP,
+      schemaVersion: SCHEMA_VERSION,
+      exportedAt: now.toISOString(),
+      counts: { projects: data.projects.length, bars: data.bars.length, types: data.types.length },
+      data,
+    },
+    null,
+    2,
+  );
+}
+
+function parseBackup(text) {
+  let raw = null;
+  try {
+    raw = JSON.parse(String(text || ''));
+  } catch {
+    return { ok: false, error: '文件不是有效的 JSON' };
+  }
+  const payload = raw && typeof raw === 'object' && raw.data && typeof raw.data === 'object' ? raw.data : raw;
+  if (!payload || typeof payload !== 'object' || (!Array.isArray(payload.projects) && !Array.isArray(payload.bars))) {
+    return { ok: false, error: '文件不是接力收集的备份' };
+  }
+  const data = migrate(payload);
+  return {
+    ok: true,
+    data,
+    app: typeof raw.app === 'string' ? raw.app : '',
+    exportedAt: typeof raw.exportedAt === 'string' ? raw.exportedAt : '',
+    counts: { projects: data.projects.length, bars: data.bars.length, types: data.types.length },
+  };
+}
+
+function mergeData(current, incoming) {
+  const base = migrate(current);
+  const add = migrate(incoming);
+
+  const types = base.types.slice();
+  const idByName = new Map(types.map((t) => [t.name, t.id]));
+  const usedTypeIds = new Set(types.map((t) => t.id));
+  const typeIdMap = new Map();
+  add.types.forEach((t) => {
+    const name = String(t.name || '').trim();
+    if (!name) return;
+    if (idByName.has(name)) {
+      typeIdMap.set(t.id, idByName.get(name));
+      return;
+    }
+    const id = t.id && !usedTypeIds.has(t.id) ? t.id : uid('type');
+    usedTypeIds.add(id);
+    idByName.set(name, id);
+    typeIdMap.set(t.id, id);
+    types.push({ ...t, id, name });
+  });
+
+  const usedBarIds = new Set(base.bars.map((b) => b.id));
+  const barIdMap = new Map();
+  add.bars.forEach((b) => {
+    const id = b.id && !usedBarIds.has(b.id) ? b.id : uid('bar');
+    usedBarIds.add(id);
+    barIdMap.set(b.id, id);
+  });
+
+  const projects = base.projects.slice();
+  const usedProjectIds = new Set(projects.map((p) => p.id));
+  const projectIdMap = new Map();
+  add.projects.forEach((p) => {
+    const id = p.id && !usedProjectIds.has(p.id) ? p.id : uid('relay');
+    usedProjectIds.add(id);
+    projectIdMap.set(p.id, id);
+    const barOrder = Array.isArray(p.barOrder) ? p.barOrder.map((x) => barIdMap.get(x)).filter(Boolean) : [];
+    projects.push({ ...p, id, barOrder });
+  });
+
+  const bars = base.bars.slice();
+  add.bars.forEach((b) => {
+    if (!projectIdMap.has(b.projectId)) return;
+    const typeId = typeIdMap.get(b.typeId) || (types.some((t) => t.id === b.typeId) ? b.typeId : null);
+    bars.push({ ...b, id: barIdMap.get(b.id), projectId: projectIdMap.get(b.projectId), typeId });
+  });
+
+  return migrate({ ...base, projects, bars, types, settings: base.settings });
+}
+
 // ---- src/core/storage.js ----
 const KEY = 'relayNoteData';
 const HAS_GM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
@@ -389,10 +490,18 @@ function rawRead() {
   }
 }
 
-function rawWrite(value) {
+function rawWriteKey(key, value) {
   const text = JSON.stringify(value);
-  if (HAS_GM) GM_setValue(KEY, text);
-  else window.localStorage.setItem(KEY, text);
+  if (HAS_GM) GM_setValue(key, text);
+  else window.localStorage.setItem(key, text);
+}
+
+function rawWrite(value) {
+  rawWriteKey(KEY, value);
+}
+
+function saveSnapshot(data) {
+  rawWriteKey(`${KEY}__preImportAt`, { at: Date.now(), data });
 }
 
 function loadData() {
@@ -677,8 +786,8 @@ async function saveToDirectory(dir, filename, text) {
   return filename;
 }
 
-function downloadText(text, filename) {
-  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+function downloadText(text, filename, mime = 'text/markdown;charset=utf-8') {
+  const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -981,6 +1090,29 @@ const CSS = `
 .trn-note-row .trn-input { flex: 1 1 0; }
 .trn-note-row .trn-input.label { flex: 0 0 96px; }
 .trn-note-row .trn-x { width: 30px; height: 30px; align-self: center; border: 1px solid var(--trn-border); }
+
+.trn-backup { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--trn-border); border-radius: 11px; padding: 11px 14px; margin-top: 12px; }
+.trn-backup-ops { display: flex; gap: 8px; flex: 0 0 auto; }
+
+@keyframes trn-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes trn-pop { from { opacity: 0; scale: 0.94; } to { opacity: 1; scale: 1; } }
+@keyframes trn-rise { from { opacity: 0; translate: 0 10px; } to { opacity: 1; translate: 0 0; } }
+@keyframes trn-slide { from { opacity: 0; translate: 18px 0; } to { opacity: 1; translate: 0 0; } }
+.trn-anim-fade { animation: trn-fade 0.18s ease both; }
+.trn-anim-pop { animation: trn-pop 0.2s cubic-bezier(0.22, 0.8, 0.3, 1) both; }
+.trn-anim-rise { animation: trn-rise 0.22s cubic-bezier(0.22, 0.8, 0.3, 1) both; }
+.trn-anim-slide { animation: trn-slide 0.24s cubic-bezier(0.22, 0.8, 0.3, 1) both; }
+.trn-root.trn-no-anim * { animation: none !important; transition: none !important; }
+
+.trn-btn, .trn-chip, .trn-toggle, .trn-side-item, .trn-entry, .trn-tabbtn, .trn-icon-btn, .trn-x, .trn-add-project, .trn-move { transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease, opacity 0.15s ease; }
+.trn-btn:active, .trn-chip:active, .trn-toggle:active, .trn-entry:active { transform: translateY(1px); }
+.trn-toggle:not(.is-on):hover, .trn-dir:hover, .trn-backup:hover { border-color: var(--trn-border-strong); }
+.trn-table td { transition: background 0.14s ease; }
+.trn-card, .trn-big { transition: box-shadow 0.2s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .trn-root * { animation: none !important; transition-duration: 0.01s !important; }
+}
 `;
 
 // ---- src/ui/dom.js ----
@@ -1011,7 +1143,7 @@ function modalShell({ title, badge = '', subtitle = '', width = 560, body = '', 
       </div>
       <button class="trn-x" data-act="close-modal" title="关闭">✕</button>
     </div>
-    <div class="trn-card-body" style="${scroll ? 'max-height:58vh' : ''}">${body}</div>
+    <div class="trn-card-body" data-scroll="card" style="${scroll ? 'max-height:58vh' : ''}">${body}</div>
     <div class="trn-card-foot">
       <span class="trn-foot-note">${esc(footNote)}</span>
       <div style="display:flex;gap:10px">${footer}</div>
@@ -1036,9 +1168,14 @@ const state = {
   newTypeValue: '',
   focusKey: null,
   dragId: null,
+  pendingImport: null,
+  backupMode: 'replace',
+  prev: { view: 'closed', tab: 'projects', modalKey: '', toastKey: '' },
+  skipScroll: null,
 };
 
 let root = null;
+let backupInput = null;
 let onSave = () => {};
 
 function projectOf(id) {
@@ -1104,6 +1241,14 @@ function mount(host, options = {}) {
   root.className = 'trn-root';
   shadow.appendChild(root);
 
+  backupInput = document.createElement('input');
+  backupInput.type = 'file';
+  backupInput.accept = '.json,application/json';
+  backupInput.dataset.role = 'backupFile';
+  backupInput.style.display = 'none';
+  backupInput.addEventListener('change', onBackupFile);
+  shadow.appendChild(backupInput);
+
   state.data = loadData();
   onExternalChange((data) => {
     state.data = data;
@@ -1112,7 +1257,9 @@ function mount(host, options = {}) {
   idbGetHandle()
     .then((handle) => {
       if (!handle) return;
-      state.data.settings.dirName = handle.name || '';
+      const name = handle.name || '';
+      if (name === state.data.settings.dirName) return;
+      state.data.settings.dirName = name;
       render();
     })
     .catch(() => {});
@@ -1128,9 +1275,70 @@ function themeIsDark() {
   return document.documentElement.classList.contains('bili_dark');
 }
 
+const SCROLL_ZONES = ['panel', 'side', 'table', 'settings', 'card'];
+
+function captureScroll() {
+  const out = {};
+  for (const zone of SCROLL_ZONES) {
+    const el = root.querySelector(`[data-scroll="${zone}"]`);
+    if (el && (el.scrollTop || el.scrollLeft)) out[zone] = { top: el.scrollTop, left: el.scrollLeft };
+  }
+  return out;
+}
+
+function restoreScroll(saved, skip) {
+  for (const zone of SCROLL_ZONES) {
+    if (skip === zone) continue;
+    const pos = saved && saved[zone];
+    if (!pos) continue;
+    const el = root.querySelector(`[data-scroll="${zone}"]`);
+    if (!el) continue;
+    el.scrollTop = pos.top;
+    el.scrollLeft = pos.left;
+  }
+}
+
+function focusSignature(el) {
+  if (!el) return '';
+  const parts = [el.tagName];
+  if (el.dataset && el.dataset.role) parts.push(`role=${el.dataset.role}`);
+  if (el.name) parts.push(`name=${el.name}`);
+  if (el.dataset && el.dataset.act) parts.push(`act=${el.dataset.act}`);
+  if (el.dataset && el.dataset.id) parts.push(`id=${el.dataset.id}`);
+  return parts.join('|');
+}
+
+function captureFocus() {
+  const el = root && root.contains(document.activeElement) ? document.activeElement : null;
+  if (!el || !el.tagName) return null;
+  const sig = focusSignature(el);
+  let start = null;
+  let end = null;
+  try {
+    if (typeof el.selectionStart === 'number') { start = el.selectionStart; end = el.selectionEnd; }
+  } catch (e) { /* 非文本控件忽略 */ }
+  return { sig, start, end };
+}
+
+function restoreCapturedFocus(info) {
+  if (!info || !info.sig) return false;
+  const nodes = root.querySelectorAll('input,textarea,select,button');
+  for (const el of nodes) {
+    if (focusSignature(el) !== info.sig) continue;
+    try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+    if (info.start !== null) {
+      try { el.setSelectionRange(info.start, info.end); } catch (e) { /* 忽略 */ }
+    }
+    return true;
+  }
+  return false;
+}
+
 function render() {
   if (!root) return;
   const pos = Number(state.data.settings.panelPosition) || 42;
+  const scroll = captureScroll();
+  const focus = captureFocus();
   root.className = `trn-root${themeIsDark() ? ' trn-dark' : ''}`;
   root.style.setProperty('--trn-big-x', `${state.offsets.big.x}px`);
   root.style.setProperty('--trn-big-y', `${state.offsets.big.y}px`);
@@ -1144,7 +1352,46 @@ function render() {
   if (state.modal) parts.push(renderModal());
   if (state.toast) parts.push(`<div class="trn-toast${state.toast.isError ? ' is-error' : ''}">${esc(state.toast.text)}</div>`);
   root.innerHTML = parts.join('');
+  applyTransitions();
+  const hadFocusKey = !!state.focusKey;
   restoreFocus();
+  if (!hadFocusKey) restoreCapturedFocus(focus);
+  restoreScroll(scroll, state.skipScroll);
+  state.skipScroll = null;
+}
+
+function applyTransitions() {
+  const prev = state.prev || {};
+  const modalKey = state.modal ? `${state.modal.type}:${state.modal.id || ''}` : '';
+  const toastKey = state.toast ? state.toast.text : '';
+  state.prev = { view: state.view, tab: state.bigTab, modalKey, toastKey };
+  if (state.data.settings.animations === false) {
+    root.classList.add('trn-no-anim');
+    return;
+  }
+  root.classList.remove('trn-no-anim');
+  if (state.view === 'panel' && prev.view !== 'panel') {
+    const el = root.querySelector('.trn-panel');
+    if (el) el.classList.add('trn-anim-slide');
+  }
+  if (state.view === 'big' && prev.view !== 'big') {
+    const el = root.querySelector('.trn-big');
+    if (el) el.classList.add('trn-anim-pop');
+  }
+  if (state.view === 'big' && prev.view === 'big' && prev.tab !== state.bigTab) {
+    const el = root.querySelector('.trn-big > .trn-manage, .trn-big > .trn-settings');
+    if (el) el.classList.add('trn-anim-fade');
+  }
+  if (state.modal && prev.modalKey !== modalKey) {
+    const back = root.querySelector('.trn-backdrop');
+    if (back) back.classList.add('trn-anim-fade');
+    const card = root.querySelector('.trn-card');
+    if (card) card.classList.add('trn-anim-pop');
+  }
+  if (state.toast && prev.toastKey !== toastKey) {
+    const el = root.querySelector('.trn-toast');
+    if (el) el.classList.add('trn-anim-rise');
+  }
 }
 
 function restoreFocus() {
@@ -1175,7 +1422,7 @@ function renderPanel(pos) {
         <button class="trn-bind-link" data-act="bind-picker">更换绑定项目 ${chev()}</button>
       </div>`
     : '<div class="trn-bind-empty">尚未绑定项目，创建一个或在项目管理中选择。</div>';
-  return `<div class="trn-panel" style="${pos > 55 ? 'bottom:70px' : 'top:96px'}">
+  return `<div class="trn-panel" data-scroll="panel" style="${pos > 55 ? 'bottom:70px' : 'top:96px'}">
     <div class="trn-panel-head" data-drag="panel">
       <div>
         <div class="trn-title">接力收集</div>
@@ -1252,7 +1499,7 @@ function renderManageBody() {
       </div>`;
     })
     .join('');
-  const side = `<div class="trn-side">
+  const side = `<div class="trn-side" data-scroll="side">
     <div class="trn-side-head"><span class="trn-side-title">我的项目</span><span class="trn-count">${projects.length}</span></div>
     <button class="trn-add-project" data-act="project-new">＋ 添加项目</button>
     <div style="margin-top:10px">${sideItems || '<div class="trn-empty">还没有项目</div>'}</div>
@@ -1330,7 +1577,7 @@ function renderProjectDetail(project) {
       <button class="${state.manage.filter === 'normal' ? 'is-on' : ''}" data-act="filter" data-id="normal">普通棒 ${normal.length}</button>
       <button class="${state.manage.filter === 'ex' ? 'is-on' : ''}" data-act="filter" data-id="ex">EX 棒 ${ex.length}</button>
     </div>
-    <div class="trn-table-wrap">
+    <div class="trn-table-wrap" data-scroll="table">
       ${
         rows.length
           ? `<table class="trn-table">
@@ -1367,8 +1614,9 @@ function renderSettingsBody() {
   const canDir = supportsDirectory();
   const fill = state.data.settings.fillMissingBars !== false;
   const theme = state.data.settings.theme || 'auto';
+  const animOn = state.data.settings.animations !== false;
 
-  return `<div class="trn-settings">
+  return `<div class="trn-settings" data-scroll="settings">
     <div class="trn-section-title">棒类型设置</div>
     <div class="trn-section-sub">用于棒记录中的作品类型单选标签，适用于所有项目。</div>
     <div class="trn-list">
@@ -1419,6 +1667,25 @@ function renderSettingsBody() {
       </button>
     </div>
 
+    <div class="trn-toggle${animOn ? ' is-on' : ''}" data-act="toggle-anim" style="margin-top:12px">
+      <div class="trn-toggle-title"><span class="trn-dot"></span>界面动画</div>
+      <div class="trn-toggle-sub">面板、弹窗与提示的出现动效。关闭后所有界面立即呈现，不做过渡。</div>
+    </div>
+
+    <div class="trn-section-title">数据备份</div>
+    <div class="trn-section-sub">把全部项目、棒记录、类型与设置导出为一个 JSON 文件，用于换机或误删后恢复。</div>
+    <div class="trn-backup">
+      <div>
+        <div class="trn-dir-name">当前数据：${state.data.projects.length} 个项目 · ${state.data.bars.length} 条棒记录 · ${state.data.types.length} 种类型</div>
+        <div class="trn-dir-sub">${state.data.settings.lastBackupAt ? `上次导出：${formatStamp(state.data.settings.lastBackupAt)}` : '尚未导出过备份'}</div>
+      </div>
+      <div class="trn-backup-ops">
+        <button class="trn-btn sm primary" data-act="backup-export">导出备份</button>
+        <button class="trn-btn sm" data-act="backup-import">导入备份</button>
+      </div>
+    </div>
+    <div class="trn-hint">导入时可选「替换全部」或「合并追加」；导入前会自动留存一份当前数据的快照，便于回退。</div>
+
     <div class="trn-section-title">导出细节</div>
     <div class="trn-toggle${fill ? ' is-on' : ''}" data-act="toggle-fill">
       <div class="trn-toggle-title"><span class="trn-dot"></span>缺号自动补位</div>
@@ -1449,6 +1716,8 @@ function renderModal() {
       return renderTypeEdit(m);
     case 'type-delete':
       return renderTypeDelete(m);
+    case 'backup-import':
+      return renderBackupImport();
     default:
       return '';
   }
@@ -1779,6 +2048,95 @@ function renderTypeDelete(m) {
     footer: `<button class="trn-btn" data-act="close-modal">取消</button>
       <button class="trn-btn danger" data-act="type-confirm-delete" data-id="${esc(type.id)}">${used.length ? '迁移并删除' : '删除类型'}</button>`,
   });
+}
+
+function renderBackupImport() {
+  const pend = state.pendingImport;
+  if (!pend) return '';
+  const c = pend.counts;
+  const merge = state.backupMode === 'merge';
+  const exported = pend.exportedAt ? formatStamp(Date.parse(pend.exportedAt)) : '';
+  return modalShell({
+    badge: '数据备份',
+    title: '导入备份',
+    subtitle: exported ? `备份导出时间：${exported}` : '来自本地备份文件',
+    width: 520,
+    body: `<div class="trn-info">
+        <strong>备份包含 ${c.projects} 个项目 · ${c.bars} 条棒记录 · ${c.types} 种类型</strong>
+        <div class="trn-info-sub">当前数据：${state.data.projects.length} 个项目 · ${state.data.bars.length} 条棒记录 · ${state.data.types.length} 种类型</div>
+      </div>
+      <div class="trn-toggle-pair" style="margin-top:14px">
+        <button class="trn-toggle${merge ? '' : ' is-on'}" data-act="backup-mode" data-id="replace">
+          <div class="trn-toggle-title"><span class="trn-dot"></span>替换全部</div>
+          <div class="trn-toggle-sub">清空现有数据，完全使用备份内容。</div>
+        </button>
+        <button class="trn-toggle${merge ? ' is-on' : ''}" data-act="backup-mode" data-id="merge">
+          <div class="trn-toggle-title"><span class="trn-dot"></span>合并追加</div>
+          <div class="trn-toggle-sub">保留现有数据，只追加备份中不重复的条目。</div>
+        </button>
+      </div>
+      <div class="trn-danger-box" style="margin-top:14px">
+        <div class="trn-danger-name">${merge ? '合并不会删除现有条目' : '替换会清空当前全部项目与棒记录'}</div>
+        <div class="trn-danger-sub">${merge ? '同名的作品类型会自动合并，不会产生重复标签。' : '导出设置、主题与入口位置也会被备份中的值覆盖。'}</div>
+      </div>
+      <div class="trn-hint">导入前会把当前数据留存为快照；如结果不符预期，可再次导入之前的备份。</div>`,
+    footer: `<button class="trn-btn" data-act="close-modal">取消</button>
+      <button class="trn-btn primary" data-act="backup-import-confirm">${merge ? '合并导入' : '替换并导入'}</button>`,
+    footNote: '导入会立即写入存储',
+  });
+}
+
+function formatStamp(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function doBackupExport() {
+  const text = buildBackup(state.data);
+  const name = backupFileName();
+  let saved = '';
+  try {
+    if (state.data.settings.exportMode === 'directory' && supportsDirectory()) {
+      const dir = await idbGetHandle();
+      if (dir) {
+        await saveToDirectory(dir, name, text);
+        saved = `已保存到目录「${dir.name || '已授权目录'}」`;
+      }
+    }
+  } catch (err) {
+    console.warn('[TH-Relay-Note] 目录写入失败，改为下载', err);
+  }
+  if (!saved) {
+    downloadText(text, name, 'application/json;charset=utf-8');
+    saved = '已开始下载';
+  }
+  state.data.settings.lastBackupAt = Date.now();
+  persist();
+  toast(`备份${saved}：${name}`);
+}
+
+async function onBackupFile(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let text = '';
+  try {
+    text = await file.text();
+  } catch {
+    toast('读取备份文件失败', true);
+    return;
+  }
+  const parsed = parseBackup(text);
+  if (!parsed.ok) {
+    toast(parsed.error, true);
+    return;
+  }
+  state.pendingImport = parsed;
+  state.backupMode = 'replace';
+  openModal({ type: 'backup-import' });
 }
 
 function val(name) {
@@ -2343,7 +2701,10 @@ function handleAction(act, id, target) {
       state.data.projects = state.data.projects.filter((p) => p.id !== id);
       state.data.bars = state.data.bars.filter((b) => b.projectId !== id);
       if (state.data.settings.boundProjectId === id) state.data.settings.boundProjectId = null;
-      if (state.manage.projectId === id) state.manage.projectId = null;
+      if (state.manage.projectId === id) {
+        state.manage.projectId = null;
+        state.skipScroll = 'table';
+      }
       persist();
       closeModal();
       toast(`已删除项目${project ? `「${project.name}」` : ''}`);
@@ -2444,6 +2805,7 @@ function handleAction(act, id, target) {
       openModal({ type: 'bind-picker' });
       break;
     case 'switch-project':
+      if (state.manage.projectId !== id) state.skipScroll = 'table';
       state.manage.projectId = id;
       render();
       break;
@@ -2544,6 +2906,40 @@ function handleAction(act, id, target) {
     case 'pick-dir':
       onPickDir();
       break;
+    case 'toggle-anim':
+      state.data.settings.animations = state.data.settings.animations === false;
+      persist();
+      render();
+      break;
+    case 'backup-export':
+      doBackupExport();
+      break;
+    case 'backup-import':
+      if (backupInput) {
+        backupInput.value = '';
+        backupInput.click();
+      }
+      break;
+    case 'backup-mode':
+      state.backupMode = id;
+      render();
+      break;
+    case 'backup-import-confirm': {
+      const pend = state.pendingImport;
+      if (!pend) {
+        closeModal();
+        return;
+      }
+      saveSnapshot(state.data);
+      const next = state.backupMode === 'merge' ? mergeData(state.data, pend.data) : pend.data;
+      state.data = next;
+      state.pendingImport = null;
+      if (state.manage.projectId && !projectOf(state.manage.projectId)) state.manage.projectId = null;
+      persist();
+      closeModal();
+      toast(state.backupMode === 'merge' ? '备份已合并导入' : '备份已替换导入');
+      break;
+    }
     case 'save-settings':
       state.newTypeValue = val('newType');
       persist();
